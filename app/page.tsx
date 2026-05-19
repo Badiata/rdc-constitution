@@ -124,16 +124,17 @@ export default function Home() {
         const chunk = decoder.decode(value, { stream: true });
         for (const line of chunk.split("\n")) {
           if (!line.startsWith("data: ")) continue;
-          const data = line.slice(6);
+          const data = line.slice(6).trim();
           if (data === "[DONE]") break;
           try {
             const parsed = JSON.parse(data);
             if (parsed.error) throw new Error(parsed.error);
             if (parsed.text) { accumulated += parsed.text; setStreamingContent(accumulated); }
-          } catch { /* skip */ }
+          } catch (e) { console.log("parse error", e); }
         }
+      if (accumulated) {
+        setMessages((prev) => [...prev, { role: "assistant", content: accumulated }]);
       }
-      setMessages((prev) => [...prev, { role: "assistant", content: accumulated }]);
       setStreamingContent("");
     } catch (err) {
       if ((err as Error).name === "AbortError") return;
