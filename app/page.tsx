@@ -19,7 +19,6 @@ interface DocState {
   text: string;
   label: string;
   year: string;
-  error?: string;
 }
 
 const SUGGESTED_QUESTIONS = [
@@ -35,7 +34,6 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [streamingContent, setStreamingContent] = useState("");
   const [docStates, setDocStates] = useState<DocState[]>(
     DOCUMENTS.map((d) => ({
       id: d.id,
@@ -51,11 +49,10 @@ export default function Home() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, streamingContent]);
+  }, [messages, isLoading]);
 
   useEffect(() => {
     if (!started) return;
@@ -69,10 +66,13 @@ export default function Home() {
       const res = await fetch(`/api/document?id=${id}`);
       const data = await res.json();
       if (data.error) throw new Error(data.error);
-      setDocStates((prev) => prev.map((d) => d.id === id ? { ...d, loading: false, loaded: true, text: data.text } : d));
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Erreur inconnue";
-      setDocStates((prev) => prev.map((d) => d.id === id ? { ...d, loading: false, loaded: true, error: msg, text: "" } : d));
+      setDocStates((prev) =>
+        prev.map((d) => d.id === id ? { ...d, loading: false, loaded: true, text: data.text } : d)
+      );
+    } catch {
+      setDocStates((prev) =>
+        prev.map((d) => d.id === id ? { ...d, loading: false, loaded: true, text: "" } : d)
+      );
     }
   }
 
@@ -96,59 +96,35 @@ export default function Home() {
   async function sendMessage(text: string) {
     if (!text.trim() || isLoading) return;
     setSidebarOpen(false);
+
     const userMsg: Message = { role: "user", content: text.trim() };
     const newMessages = [...messages, userMsg];
     setMessages(newMessages);
     setInput("");
     setIsLoading(true);
-    setStreamingContent("");
     if (inputRef.current) inputRef.current.style.height = "auto";
-    abortRef.current = new AbortController();
+
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: newMessages, docs: getActiveDocs() }),
-        signal: abortRef.current.signal,
       });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || `HTTP ${res.status}`);
-      }
-      const reader = res.body!.getReader();
-      const decoder = new TextDecoder();
-      let accumulated = "";
-      let buffer = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith("data: ")) continue;
-          const data = trimmed.slice(6).trim();
-          if (data === "[DONE]") continue;
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed.error) throw new Error(parsed.error);
-            if (parsed.text) {
-              accumulated += parsed.text;
-              setStreamingContent(accumulated);
-            }
-          } catch {
-            // skip malformed chunks
-          }
-        }
-      }
-      setMessages((prev) => [...prev, { role: "assistant", content: accumulated || "Pas de réponse reçue." }]);
-      setStreamingContent("");
+
+      const data = await res.json();
+
+      if (data.error) throw new Error(data.error);
+
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: data.text || "Pas de réponse." },
+      ]);
     } catch (err) {
-      if ((err as Error).name === "AbortError") return;
       const msg = err instanceof Error ? err.message : "Erreur inconnue";
-      setMessages((prev) => [...prev, { role: "assistant", content: `**Erreur :** ${msg}` }]);
-      setStreamingContent("");
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: `Erreur : ${msg}` },
+      ]);
     } finally {
       setIsLoading(false);
     }
@@ -168,9 +144,7 @@ export default function Home() {
   }
 
   function newChat() {
-    abortRef.current?.abort();
     setMessages([]);
-    setStreamingContent("");
     setIsLoading(false);
     setSidebarOpen(false);
   }
@@ -180,52 +154,36 @@ export default function Home() {
   if (!started) return <Landing onStart={() => setStarted(true)} />;
 
   return (
-    <div style={{ display: "flex", height: "100vh", overflow: "hidden", position: "relative" }}>
+    <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
       {sidebarOpen && (
-        <div
-          onClick={() => setSidebarOpen(false)}
-          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 40 }}
-        />
+        <div onClick={() => setSidebarOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 40 }} />
       )}
 
       <div style={{ position: "relative", zIndex: 50, flexShrink: 0 }} className={`sidebar-wrapper${sidebarOpen ? " open" : ""}`}>
-        <Sidebar
-          docStates={docStates}
-          onToggleDoc={toggleDoc}
-          onNewChat={newChat}
-          onAskQuestion={(q) => sendMessage(q)}
-          onClose={() => setSidebarOpen(false)}
-        />
+        <Sidebar docStates={docStates} onToggleDoc={toggleDoc} onNewChat={newChat} onAskQuestion={(q) => sendMessage(q)} onClose={() => setSidebarOpen(false)} />
       </div>
 
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
+
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0.7rem 1.25rem", borderBottom: "1px solid var(--border)", background: "var(--surface)", flexShrink: 0 }}>
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="hamburger"
-            style={{ width: 34, height: 34, background: "none", border: "1px solid var(--border)", borderRadius: 8, display: "none", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "var(--txt2)", flexShrink: 0 }}
-            aria-label="Menu"
-          >
+          <button onClick={() => setSidebarOpen(true)} className="hamburger"
+            style={{ width: 34, height: 34, background: "none", border: "1px solid var(--border)", borderRadius: 8, display: "none", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "var(--txt2)", flexShrink: 0 }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
             </svg>
           </button>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 16, fontWeight: 600, color: "var(--txt)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            <div style={{ fontFamily: "'Playfair Display', serif", fontSize: 16, fontWeight: 600, color: "var(--txt)" }}>
               Dialogue Constitutionnel · RDC
             </div>
             <div style={{ fontSize: 11, color: "var(--txt3)", fontStyle: "italic" }}>
-              {activeDocs.length > 0
-                ? `${activeDocs.length} document${activeDocs.length > 1 ? "s" : ""} actif${activeDocs.length > 1 ? "s" : ""}`
-                : "Activez un document dans la barre latérale"}
+              {activeDocs.length > 0 ? `${activeDocs.length} document${activeDocs.length > 1 ? "s" : ""} actif${activeDocs.length > 1 ? "s" : ""}` : "Activez un document dans la barre latérale"}
             </div>
           </div>
-          <button
-            onClick={newChat}
-            style={{ background: "none", border: "1px solid var(--border)", borderRadius: 8, padding: "5px 12px", fontSize: 12, color: "var(--txt2)", cursor: "pointer", flexShrink: 0, whiteSpace: "nowrap" }}
+          <button onClick={newChat}
+            style={{ background: "none", border: "1px solid var(--border)", borderRadius: 8, padding: "5px 12px", fontSize: 12, color: "var(--txt2)", cursor: "pointer", flexShrink: 0 }}
             onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--blue)"; e.currentTarget.style.color = "var(--blue)"; e.currentTarget.style.background = "var(--blue-lt)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.color = "var(--txt2)"; e.currentTarget.style.background = "none"; }}
-          >
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.color = "var(--txt2)"; e.currentTarget.style.background = "none"; }}>
             Réinitialiser
           </button>
         </div>
@@ -240,74 +198,57 @@ export default function Home() {
                   Bienvenue dans votre Assistant Constitutionnel
                 </h2>
                 <p style={{ fontSize: 13.5, color: "var(--txt2)", lineHeight: 1.7 }}>
-                  Je couvre <strong>10 textes constitutionnels congolais</strong> de 1908 à 2011, chargés directement depuis la Présidence de la RDC. Activez les documents dans la barre latérale, posez vos questions — je citerai toujours le document source et l&apos;article précis.
+                  Je couvre <strong>10 textes constitutionnels congolais</strong> de 1908 à 2011. Activez les documents dans la barre latérale, posez vos questions — je citerai toujours le document source et l&apos;article précis.
                 </p>
               </div>
-              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: "0.6rem" }}>
-                Commencer par
-              </div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--txt3)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: "0.6rem" }}>Commencer par</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {SUGGESTED_QUESTIONS.map((q) => (
-                  <button
-                    key={q}
-                    onClick={() => sendMessage(q)}
+                  <button key={q} onClick={() => sendMessage(q)}
                     style={{ textAlign: "left", background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, padding: "0.65rem 1rem", fontSize: 13.5, color: "var(--txt2)", cursor: "pointer", transition: "all 0.15s", display: "flex", alignItems: "center", gap: 8 }}
                     onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--blue)"; e.currentTarget.style.color = "var(--blue)"; e.currentTarget.style.background = "var(--blue-lt)"; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.color = "var(--txt2)"; e.currentTarget.style.background = "var(--surface)"; }}
-                  >
-                    <span style={{ color: "var(--yellow-dk)", flexShrink: 0 }}>→</span>
-                    {q}
+                    onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; e.currentTarget.style.color = "var(--txt2)"; e.currentTarget.style.background = "var(--surface)"; }}>
+                    <span style={{ color: "var(--yellow-dk)" }}>→</span>{q}
                   </button>
                 ))}
               </div>
             </div>
           )}
 
-          {messages.map((msg, i) => (
-            <ChatMessage key={i} role={msg.role} content={msg.content} />
-          ))}
+          {messages.map((msg, i) => <ChatMessage key={i} role={msg.role} content={msg.content} />)}
 
           {isLoading && (
-            <ChatMessage role="assistant" content={streamingContent} isStreaming />
+            <div className="fade-up" style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+              <div style={{ width: 32, height: 32, borderRadius: "50%", background: "var(--blue-dk)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 2L4 6v6c0 5.5 3.5 10 8 11.5C16.5 22 20 17.5 20 12V6L12 2z"/><path d="M9 12l2 2 4-4"/>
+                </svg>
+              </div>
+              <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 12, borderTopLeftRadius: 4, padding: "0.75rem 1rem" }}>
+                <span className="dot"/><span className="dot"/><span className="dot"/>
+              </div>
+            </div>
           )}
 
           <div ref={messagesEndRef} />
         </div>
 
         <div style={{ padding: "0.85rem 1.25rem 1rem", borderTop: "1px solid var(--border)", background: "var(--surface)", flexShrink: 0 }}>
-          <div
-            style={{ display: "flex", alignItems: "flex-end", gap: 8, background: "var(--bg)", border: "1.5px solid var(--border)", borderRadius: 12, padding: "0.55rem 0.55rem 0.55rem 0.9rem", transition: "border-color 0.15s" }}
+          <div style={{ display: "flex", alignItems: "flex-end", gap: 8, background: "var(--bg)", border: "1.5px solid var(--border)", borderRadius: 12, padding: "0.55rem 0.55rem 0.55rem 0.9rem" }}
             onFocusCapture={(e) => (e.currentTarget.style.borderColor = "var(--blue)")}
-            onBlurCapture={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
-          >
-            <textarea
-              ref={inputRef}
-              value={input}
-              onChange={handleInput}
-              onKeyDown={handleKeyDown}
+            onBlurCapture={(e) => (e.currentTarget.style.borderColor = "var(--border)")}>
+            <textarea ref={inputRef} value={input} onChange={handleInput} onKeyDown={handleKeyDown}
               placeholder="Posez votre question sur les textes constitutionnels congolais…"
-              rows={1}
-              disabled={isLoading}
-              style={{ flex: 1, border: "none", background: "transparent", fontFamily: "'Inter', sans-serif", fontSize: 14, color: "var(--txt)", resize: "none", outline: "none", minHeight: 22, maxHeight: 120, lineHeight: 1.55, padding: 0 }}
-            />
-            <button
-              onClick={() => sendMessage(input)}
-              disabled={isLoading || !input.trim()}
-              style={{ width: 36, height: 36, background: isLoading || !input.trim() ? "var(--border)" : "var(--blue)", border: "none", borderRadius: 8, color: "#fff", cursor: isLoading || !input.trim() ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "background 0.15s" }}
-              aria-label="Envoyer"
-            >
-              {isLoading ? (
-                <div className="spin" style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%" }} />
-              ) : (
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
-                </svg>
-              )}
+              rows={1} disabled={isLoading}
+              style={{ flex: 1, border: "none", background: "transparent", fontFamily: "'Inter', sans-serif", fontSize: 14, color: "var(--txt)", resize: "none", outline: "none", minHeight: 22, maxHeight: 120, lineHeight: 1.55, padding: 0 }} />
+            <button onClick={() => sendMessage(input)} disabled={isLoading || !input.trim()}
+              style={{ width: 36, height: 36, background: isLoading || !input.trim() ? "var(--border)" : "var(--blue)", border: "none", borderRadius: 8, color: "#fff", cursor: isLoading || !input.trim() ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              {isLoading
+                ? <div className="spin" style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%" }} />
+                : <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>}
             </button>
           </div>
-          <div style={{ marginTop: 5, fontSize: 10.5, color: "var(--txt3)", textAlign: "center" }}>
-            Entrée pour envoyer · Maj+Entrée pour nouvelle ligne
-          </div>
+          <div style={{ marginTop: 5, fontSize: 10.5, color: "var(--txt3)", textAlign: "center" }}>Entrée pour envoyer · Maj+Entrée pour nouvelle ligne</div>
         </div>
       </div>
 
