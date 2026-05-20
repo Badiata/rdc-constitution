@@ -163,7 +163,7 @@ export default function Home() {
         <Sidebar docStates={docStates} onToggleDoc={toggleDoc} onNewChat={newChat} onAskQuestion={(q) => sendMessage(q)} onClose={() => setSidebarOpen(false)} />
       </div>
 
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
+      <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "1.5rem 1.25rem", display: "flex", flexDirection: "column", gap: "1.25rem" }}>
 
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0.7rem 1.25rem", borderBottom: "1px solid var(--border)", background: "var(--surface)", flexShrink: 0 }}>
           <button onClick={() => setSidebarOpen(true)} className="hamburger"
